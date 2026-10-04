@@ -300,6 +300,25 @@ install_kdeconnect() {
   print_ok "KDE Connect instalado"
 }
 
+install_noir_theme() {
+  local theme_file
+  theme_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/caelestia-noir.ron"
+  if ! command -v cosmic-settings &>/dev/null; then
+    print_warn "cosmic-settings no encontrado — el tema Noir requiere COSMIC"
+    return
+  fi
+  if [[ ! -f "$theme_file" ]]; then
+    print_error "No se encontró $theme_file"
+    return
+  fi
+  print_step "Instalando tema COSMIC caelestia-noir..."
+  if cosmic-settings appearance import "$theme_file" &>/dev/null; then
+    print_ok "Tema caelestia-noir aplicado (modo oscuro)"
+  else
+    print_error "No se pudo importar el tema caelestia-noir"
+  fi
+}
+
 install_bat() {
   if command -v bat &>/dev/null || command -v batcat &>/dev/null; then
     print_skip "bat ya está instalado"
@@ -621,6 +640,7 @@ show_summary() {
     [steam]="Steam"
     [copyq]="CopyQ — gestor de portapapeles"
     [kdeconnect]="KDE Connect"
+    [noir_theme]="Tema COSMIC caelestia-noir"
     [vlc]="VLC"
     [gimp]="GIMP"
     [flameshot]="Flameshot"
@@ -630,7 +650,7 @@ show_summary() {
   # FIX: mostrar en orden definido, no el aleatorio de las claves del asociativo
   local ordered=(base eza bat htop zsh_ohmyzsh ohmyposh nerd_fonts zshrc
                  vscode nvm_node rvm_ruby docker
-                 obsidian steam copyq kdeconnect vlc gimp flameshot)
+                 obsidian steam copyq kdeconnect noir_theme vlc gimp flameshot)
   for key in "${ordered[@]}"; do
     if [[ "${SELECTIONS[$key]:-off}" == "on" ]]; then
       echo -e "  ${CHECK} ${LABEL_MAP[$key]:-$key}"
@@ -686,6 +706,7 @@ run_installations() {
   if [[ "${SELECTIONS[steam]:-off}"      == "on" ]]; then install_steam;      fi
   if [[ "${SELECTIONS[copyq]:-off}"      == "on" ]]; then install_copyq;      fi
   if [[ "${SELECTIONS[kdeconnect]:-off}" == "on" ]]; then install_kdeconnect; fi
+  if [[ "${SELECTIONS[noir_theme]:-off}" == "on" ]]; then install_noir_theme; fi
   if [[ "${SELECTIONS[vlc]:-off}"        == "on" ]]; then install_vlc;        fi
   if [[ "${SELECTIONS[gimp]:-off}"       == "on" ]]; then install_gimp;       fi
   if [[ "${SELECTIONS[flameshot]:-off}"  == "on" ]]; then install_flameshot;  fi
@@ -723,6 +744,7 @@ show_menu "apps" \
   "steam:Steam (gaming)" \
   "copyq:CopyQ — gestor de portapapeles avanzado" \
   "kdeconnect:KDE Connect — sincronización con Android" \
+  "noir_theme:Tema COSMIC caelestia-noir (oscuro, esquinas rectas)" \
   "vlc:VLC — reproductor multimedia" \
   "gimp:GIMP — editor de imágenes" \
   "flameshot:Flameshot — capturas de pantalla"
