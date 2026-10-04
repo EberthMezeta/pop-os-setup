@@ -339,47 +339,46 @@ PY
   done
 }
 
-install_obsidian() {
-  local OBSIDIAN_DIR="$HOME/AppImages"
-  local OBSIDIAN_APPIMAGE="$OBSIDIAN_DIR/Obsidian.AppImage"
+# Apps de la tienda COSMIC (Flatpak). Para agregar otra, añade una línea:
+#   "id_menu|remoto|id_flatpak|Texto del menú"
+# El id_flatpak se busca con: flatpak search <nombre>
+FLATPAK_APPS=(
+  "spotify|flathub|com.spotify.Client|Spotify"
+  "obsidian|flathub|md.obsidian.Obsidian|Obsidian"
+  "cosmic_tweaks|flathub|dev.edfloreshz.CosmicTweaks|COSMIC Tweaks — ajustes extra del escritorio"
+  "clipboard_applet|cosmic|io.github.cosmic_utils.cosmic-ext-applet-clipboard-manager|Applet de portapapeles para el panel de COSMIC"
+)
 
-  if [[ -x "$OBSIDIAN_APPIMAGE" ]]; then
-    print_skip "Obsidian ya está instalado"
-    return
+ensure_flatpak_remotes() {
+  if ! command -v flatpak &>/dev/null; then
+    sudo apt install -y -qq flatpak
   fi
-  print_step "Instalando Obsidian (AppImage)..."
-  mkdir -p "$OBSIDIAN_DIR"
+  flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  flatpak remote-add --user --if-not-exists cosmic https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
+}
 
-  local obsidian_url
-  if ! obsidian_url=$(github_latest_url "obsidianmd/obsidian-releases" "AppImage"); then
-    print_error "No se pudo instalar Obsidian"
-    return 0  # FIX: return 0 para no matar el script con set -e
-  fi
+# Se instalan para el usuario (--user), igual que desde la tienda COSMIC
+install_flatpak_apps() {
+  local entry key remote app_id label remotes_ready=false
+  for entry in "${FLATPAK_APPS[@]}"; do
+    IFS='|' read -r key remote app_id label <<< "$entry"
+    [[ "${SELECTIONS[$key]:-off}" == "on" ]] || continue
 
-  wget -q "$obsidian_url" -O "$OBSIDIAN_APPIMAGE"
-  chmod +x "$OBSIDIAN_APPIMAGE"
-
-  local ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
-  mkdir -p "$ICON_DIR"
-  wget -q "https://upload.wikimedia.org/wikipedia/commons/thumb/1/10/2023_Obsidian_logo.svg/512px-2023_Obsidian_logo.svg.png" \
-    -O "$ICON_DIR/obsidian.png"
-
-  mkdir -p ~/.local/share/applications
-  cat > ~/.local/share/applications/obsidian.desktop <<EOF
-[Desktop Entry]
-Name=Obsidian
-Comment=Markdown knowledge base
-Exec=$OBSIDIAN_APPIMAGE --enable-features=UseOzonePlatform --ozone-platform=wayland
-Icon=obsidian
-Terminal=false
-Type=Application
-Categories=Office;Utility;Notes;
-StartupWMClass=obsidian
-EOF
-
-  update-desktop-database ~/.local/share/applications 2>/dev/null || true
-  gtk-update-icon-cache ~/.local/share/icons/hicolor 2>/dev/null || true
-  print_ok "Obsidian instalado en $OBSIDIAN_APPIMAGE"
+    if flatpak info --user "$app_id" &>/dev/null; then
+      print_skip "${label%% —*} ya está instalado"
+      continue
+    fi
+    if [[ "$remotes_ready" == false ]]; then
+      ensure_flatpak_remotes
+      remotes_ready=true
+    fi
+    print_step "Instalando ${label%% —*} (Flatpak)..."
+    if flatpak install --user -y --noninteractive "$remote" "$app_id" &>/dev/null; then
+      print_ok "${label%% —*} instalado"
+    else
+      print_error "No se pudo instalar ${label%% —*} ($app_id)"
+    fi
+  done
 }
 
 install_steam() {
@@ -483,6 +482,37 @@ install_noir_theme() {
   else
     print_error "No se pudo importar el tema caelestia-noir"
   fi
+}
+
+install_candy_icons() {
+  local ICONS_DIR="$HOME/.local/share/icons"
+  local ICON_THEME_FILE="$HOME/.config/cosmic/com.system76.CosmicTk/v1/icon_theme"
+
+  if [[ -f "$ICONS_DIR/candy-icons/index.theme" ]]; then
+    print_skip "Candy Icons ya está instalado"
+  else
+    print_step "Descargando Candy Icons..."
+    mkdir -p "$ICONS_DIR"
+    local tmp
+    tmp=$(mktemp -d)
+    if ! wget -q "https://github.com/EliverLara/candy-icons/archive/refs/heads/master.tar.gz" -O "$tmp/candy.tar.gz"; then
+      print_error "No se pudo descargar Candy Icons"
+      rm -rf "$tmp"
+      return 0
+    fi
+    tar -xzf "$tmp/candy.tar.gz" -C "$tmp"
+    rm -rf "$ICONS_DIR/candy-icons"
+    mv "$tmp/candy-icons-master" "$ICONS_DIR/candy-icons"
+    rm -rf "$tmp"
+    gtk-update-icon-cache "$ICONS_DIR/candy-icons" 2>/dev/null || true
+    print_ok "Candy Icons instalado en $ICONS_DIR/candy-icons"
+  fi
+
+  # Activarlo en COSMIC (Ajustes → Apariencia → Iconos) y en apps GTK
+  mkdir -p "$(dirname "$ICON_THEME_FILE")"
+  echo '"candy-icons"' > "$ICON_THEME_FILE"
+  gsettings set org.gnome.desktop.interface icon-theme 'candy-icons' 2>/dev/null || true
+  print_ok "Candy Icons activado como tema de iconos"
 }
 
 install_bat() {
@@ -688,10 +718,11 @@ declare -A SELECTIONS
 
 _menu_title() {
   case "$1" in
-    base)  echo "PASO 1 / 4 — Herramientas Base" ;;
-    shell) echo "PASO 2 / 4 — Terminal & Shell" ;;
-    dev)   echo "PASO 3 / 4 — Desarrollo" ;;
-    apps)  echo "PASO 4 / 4 — Aplicaciones" ;;
+    base)  echo "PASO 1 / 5 — Herramientas Base" ;;
+    shell) echo "PASO 2 / 5 — Terminal & Shell" ;;
+    dev)   echo "PASO 3 / 5 — Desarrollo" ;;
+    apps)  echo "PASO 4 / 5 — Aplicaciones" ;;
+    store) echo "PASO 5 / 5 — Tienda COSMIC (Flatpak)" ;;
   esac
 }
 
@@ -814,11 +845,11 @@ show_summary() {
     [nvm_node]="NVM + Node.js LTS"
     [rvm_ruby]="RVM + Ruby"
     [docker]="Docker Engine"
-    [obsidian]="Obsidian (AppImage + Wayland)"
     [steam]="Steam"
     [copyq]="CopyQ — gestor de portapapeles"
     [kdeconnect]="KDE Connect + \"Enviar a dispositivo\" en el menú de archivos"
     [noir_theme]="Tema COSMIC caelestia-noir"
+    [candy_icons]="Candy Icons — tema de iconos"
     [vlc]="VLC"
     [gimp]="GIMP"
     [flameshot]="Flameshot"
@@ -828,7 +859,13 @@ show_summary() {
   # FIX: mostrar en orden definido, no el aleatorio de las claves del asociativo
   local ordered=(base eza bat htop zsh_ohmyzsh ohmyposh nerd_fonts zshrc
                  vscode vscodium vscodium_profiles nvm_node rvm_ruby docker
-                 obsidian steam copyq kdeconnect noir_theme vlc gimp flameshot)
+                 steam copyq kdeconnect noir_theme candy_icons vlc gimp flameshot)
+  local entry fp_key fp_label
+  for entry in "${FLATPAK_APPS[@]}"; do
+    IFS='|' read -r fp_key _ _ fp_label <<< "$entry"
+    LABEL_MAP[$fp_key]="$fp_label (Flatpak)"
+    ordered+=("$fp_key")
+  done
   for key in "${ordered[@]}"; do
     if [[ "${SELECTIONS[$key]:-off}" == "on" ]]; then
       echo -e "  ${CHECK} ${LABEL_MAP[$key]:-$key}"
@@ -882,14 +919,15 @@ run_installations() {
   if [[ "${SELECTIONS[nvm_node]:-off}"   == "on" ]]; then install_nvm_node;   fi
   if [[ "${SELECTIONS[rvm_ruby]:-off}"   == "on" ]]; then install_rvm_ruby;   fi
   if [[ "${SELECTIONS[docker]:-off}"     == "on" ]]; then install_docker;     fi
-  if [[ "${SELECTIONS[obsidian]:-off}"   == "on" ]]; then install_obsidian;   fi
   if [[ "${SELECTIONS[steam]:-off}"      == "on" ]]; then install_steam;      fi
   if [[ "${SELECTIONS[copyq]:-off}"      == "on" ]]; then install_copyq;      fi
   if [[ "${SELECTIONS[kdeconnect]:-off}" == "on" ]]; then install_kdeconnect; fi
   if [[ "${SELECTIONS[noir_theme]:-off}" == "on" ]]; then install_noir_theme; fi
+  if [[ "${SELECTIONS[candy_icons]:-off}" == "on" ]]; then install_candy_icons; fi
   if [[ "${SELECTIONS[vlc]:-off}"        == "on" ]]; then install_vlc;        fi
   if [[ "${SELECTIONS[gimp]:-off}"       == "on" ]]; then install_gimp;       fi
   if [[ "${SELECTIONS[flameshot]:-off}"  == "on" ]]; then install_flameshot;  fi
+  install_flatpak_apps
 }
 
 # ================================================
@@ -922,14 +960,21 @@ show_menu "dev" \
   "docker:Docker Engine"
 
 show_menu "apps" \
-  "obsidian:Obsidian (AppImage, con soporte Wayland)" \
   "steam:Steam (gaming)" \
   "copyq:CopyQ — gestor de portapapeles avanzado" \
   "kdeconnect:KDE Connect — sincronización con Android + \"Enviar a\" en archivos" \
   "noir_theme:Tema COSMIC caelestia-noir (oscuro, esquinas rectas)" \
+  "candy_icons:Candy Icons — tema de iconos con degradados" \
   "vlc:VLC — reproductor multimedia" \
   "gimp:GIMP — editor de imágenes" \
   "flameshot:Flameshot — capturas de pantalla"
+
+flatpak_options=()
+for entry in "${FLATPAK_APPS[@]}"; do
+  IFS='|' read -r fp_key _ _ fp_label <<< "$entry"
+  flatpak_options+=("$fp_key:$fp_label")
+done
+show_menu "store" "${flatpak_options[@]}"
 
 show_summary
 run_installations
