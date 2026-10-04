@@ -571,7 +571,17 @@ install_docker() {
     return
   fi
   print_step "Instalando Docker..."
-  curl -fsSL https://get.docker.com | sudo bash
+  # get.docker.com no reconoce Pop!_OS (ID=pop) y lo toma por Debian; se usa el
+  # repo oficial de Ubuntu con el codename base (p. ej. noble en Pop!_OS 24.04)
+  local codename
+  codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
+  sudo install -m 0755 -d /etc/apt/keyrings
+  sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  sudo chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo apt update -qq
+  sudo apt install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   sudo usermod -aG docker "$USER"
   print_ok "Docker instalado (cierra sesión para usarlo sin sudo)"
 }
