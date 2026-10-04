@@ -227,6 +227,118 @@ install_vscode() {
   print_ok "VS Code instalado"
 }
 
+install_vscodium() {
+  if command -v codium &>/dev/null; then
+    print_skip "VSCodium ya está instalado"
+    return
+  fi
+  print_step "Instalando VSCodium..."
+  wget -qO- https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg \
+    | gpg --dearmor | sudo dd of=/usr/share/keyrings/vscodium-archive-keyring.gpg status=none
+  sudo tee /etc/apt/sources.list.d/vscodium.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://download.vscodium.com/debs
+Suites: vscodium
+Components: main
+Architectures: amd64 arm64
+Signed-by: /usr/share/keyrings/vscodium-archive-keyring.gpg
+EOF
+  sudo apt update -qq
+  sudo apt install -y -qq codium
+  print_ok "VSCodium instalado"
+}
+
+# Crea (o actualiza) en VSCodium cada perfil de perfiles-de-desarrollo/<carpeta>/
+# usando su perfil.conf, settings.json y extensions.txt
+configure_vscodium_profiles() {
+  local profiles_dir
+  profiles_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/perfiles-de-desarrollo"
+  local user_dir="$HOME/.config/VSCodium/User"
+  local storage="$user_dir/globalStorage/storage.json"
+
+  if ! command -v codium &>/dev/null; then
+    print_error "VSCodium no está instalado — no se pueden configurar perfiles"
+    return 0
+  fi
+  if [[ ! -d "$profiles_dir" ]]; then
+    print_error "No se encontró $profiles_dir"
+    return 0
+  fi
+  # VSCodium reescribe storage.json al cerrarse; si está abierto pisaría el perfil nuevo
+  if pgrep -x codium &>/dev/null; then
+    print_warn "VSCodium está abierto — ciérralo para configurar los perfiles"
+    while pgrep -x codium &>/dev/null; do
+      confirm "¿Ya lo cerraste?" "y" || { print_skip "Perfiles de VSCodium"; return 0; }
+    done
+  fi
+
+  # Todo Tree usa el ripgrep del sistema (todo-tree.ripgrep.ripgrep = /usr/bin/rg)
+  if ! command -v rg &>/dev/null; then
+    sudo apt install -y -qq ripgrep
+  fi
+
+  mkdir -p "$user_dir/globalStorage"
+
+  local dir
+  for dir in "$profiles_dir"/*/; do
+    [[ -f "$dir/perfil.conf" ]] || continue
+    local NOMBRE="" ICONO=""
+    # shellcheck source=/dev/null
+    source "$dir/perfil.conf"
+    [[ -n "$NOMBRE" ]] || { print_error "Falta NOMBRE en $dir/perfil.conf"; continue; }
+
+    print_step "Configurando perfil de VSCodium \"$NOMBRE\"..."
+
+    # Registrar el perfil en storage.json (o reutilizar el existente) y obtener su carpeta
+    local location
+    location=$(python3 - "$storage" "$NOMBRE" "${ICONO:-}" <<'PY'
+import json, os, secrets, sys
+path, name, icon = sys.argv[1:4]
+data = {}
+if os.path.exists(path):
+    with open(path) as f:
+        data = json.load(f)
+profiles = data.setdefault("userDataProfiles", [])
+for p in profiles:
+    if p.get("name") == name:
+        print(p["location"])
+        sys.exit()
+entry = {"location": secrets.token_hex(4), "name": name}
+if icon:
+    entry["icon"] = icon
+profiles.append(entry)
+with open(path, "w") as f:
+    json.dump(data, f, indent=4)
+print(entry["location"])
+PY
+    ) || { print_error "No se pudo registrar el perfil $NOMBRE"; continue; }
+
+    local profile_path="$user_dir/profiles/$location"
+    mkdir -p "$profile_path"
+
+    if [[ -f "$dir/settings.json" ]]; then
+      if [[ -s "$profile_path/settings.json" ]] && ! cmp -s "$dir/settings.json" "$profile_path/settings.json"; then
+        local backup="$profile_path/settings.json.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$profile_path/settings.json" "$backup"
+        print_warn "Backup de ajustes previos en $backup"
+      fi
+      cp "$dir/settings.json" "$profile_path/settings.json"
+    fi
+
+    if [[ -f "$dir/extensions.txt" ]]; then
+      local ext failed=0
+      while read -r ext; do
+        [[ -z "$ext" || "$ext" == \#* ]] && continue
+        codium --profile "$NOMBRE" --install-extension "$ext" &>/dev/null \
+          || { print_error "No se pudo instalar $ext"; failed=$(( failed + 1 )); }
+      done < "$dir/extensions.txt"
+      (( failed == 0 )) || print_warn "$failed extensiones fallaron en \"$NOMBRE\""
+    fi
+
+    print_ok "Perfil \"$NOMBRE\" listo"
+  done
+}
+
 install_obsidian() {
   local OBSIDIAN_DIR="$HOME/AppImages"
   local OBSIDIAN_APPIMAGE="$OBSIDIAN_DIR/Obsidian.AppImage"
@@ -291,13 +403,67 @@ install_copyq() {
 }
 
 install_kdeconnect() {
-  if command -v kdeconnectd &>/dev/null; then
+  # kdeconnectd vive en libexec (fuera del PATH); kdeconnect-cli sí está en /usr/bin
+  if command -v kdeconnect-cli &>/dev/null; then
     print_skip "KDE Connect ya está instalado"
-    return
+  else
+    print_step "Instalando KDE Connect..."
+    sudo apt install -y -qq kdeconnect
+    print_ok "KDE Connect instalado"
   fi
-  print_step "Instalando KDE Connect..."
-  sudo apt install -y -qq kdeconnect
-  print_ok "KDE Connect instalado"
+  configure_kdeconnect_sendto
+}
+
+# "Enviar a dispositivo (KDE Connect)" en el clic derecho de los archivos.
+# COSMIC Files lee sus acciones del menú contextual de
+# ~/.config/cosmic/com.system76.CosmicFiles/v1/context_actions (formato RON).
+configure_kdeconnect_sendto() {
+  local script_src actions_file entry
+  script_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kdeconnect-enviar.sh"
+  if [[ ! -f "$script_src" ]]; then
+    print_error "No se encontró $script_src"
+    return 0
+  fi
+
+  print_step "Agregando \"Enviar a dispositivo\" al menú de archivos..."
+  # zenity muestra la ventana para elegir el dispositivo
+  if ! command -v zenity &>/dev/null; then
+    sudo apt install -y -qq zenity
+  fi
+
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$script_src" "$HOME/.local/bin/kdeconnect-enviar"
+
+  # Versiones anteriores lo registraban como aplicación; COSMIC Files no lo mostraba
+  rm -f "$HOME/.local/share/applications/kdeconnect-enviar.desktop"
+  update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+
+  actions_file="$HOME/.config/cosmic/com.system76.CosmicFiles/v1/context_actions"
+  entry="    (
+        name: \"Enviar a dispositivo (KDE Connect)\",
+        selection: Files,
+        steps: [\"$HOME/.local/bin/kdeconnect-enviar %F\"],
+    ),"
+  mkdir -p "$(dirname "$actions_file")"
+
+  if [[ -f "$actions_file" ]] && grep -q 'kdeconnect-enviar' "$actions_file"; then
+    print_skip "\"Enviar a dispositivo\" ya está en el menú de archivos"
+    return 0
+  elif [[ -s "$actions_file" ]] && [[ "$(grep -v '^[[:space:]]*$' "$actions_file" | tail -n 1)" == "]" ]]; then
+    # Ya hay otras acciones: agregar la nuestra antes del "]" final
+    local tmp
+    tmp="$(mktemp)"
+    { sed '$!b; /^[[:space:]]*\][[:space:]]*$/d' <(grep -v '^[[:space:]]*$' "$actions_file")
+      printf '%s\n]\n' "$entry"; } > "$tmp"
+    mv "$tmp" "$actions_file"
+  elif [[ -s "$actions_file" ]]; then
+    print_warn "No se pudo modificar $actions_file (formato inesperado); agrega la acción a mano"
+    return 0
+  else
+    printf '[\n%s\n]\n' "$entry" > "$actions_file"
+  fi
+
+  print_ok "\"Enviar a dispositivo\" disponible en el clic derecho de los archivos (reabre COSMIC Files)"
 }
 
 install_noir_theme() {
@@ -633,13 +799,15 @@ show_summary() {
     [nerd_fonts]="Nerd Fonts (Hack + Cascadia Code)"
     [zshrc]="Generar ~/.zshrc preconfigurado"
     [vscode]="Visual Studio Code"
+    [vscodium]="VSCodium"
+    [vscodium_profiles]="Perfiles de desarrollo de VSCodium"
     [nvm_node]="NVM + Node.js LTS"
     [rvm_ruby]="RVM + Ruby"
     [docker]="Docker Engine"
     [obsidian]="Obsidian (AppImage + Wayland)"
     [steam]="Steam"
     [copyq]="CopyQ — gestor de portapapeles"
-    [kdeconnect]="KDE Connect"
+    [kdeconnect]="KDE Connect + \"Enviar a dispositivo\" en el menú de archivos"
     [noir_theme]="Tema COSMIC caelestia-noir"
     [vlc]="VLC"
     [gimp]="GIMP"
@@ -649,7 +817,7 @@ show_summary() {
   local count=0
   # FIX: mostrar en orden definido, no el aleatorio de las claves del asociativo
   local ordered=(base eza bat htop zsh_ohmyzsh ohmyposh nerd_fonts zshrc
-                 vscode nvm_node rvm_ruby docker
+                 vscode vscodium vscodium_profiles nvm_node rvm_ruby docker
                  obsidian steam copyq kdeconnect noir_theme vlc gimp flameshot)
   for key in "${ordered[@]}"; do
     if [[ "${SELECTIONS[$key]:-off}" == "on" ]]; then
@@ -699,6 +867,8 @@ run_installations() {
   if [[ "${SELECTIONS[htop]:-off}"       == "on" ]]; then install_htop;       fi
   if [[ "${SELECTIONS[zshrc]:-off}"      == "on" ]]; then configure_zshrc;    fi
   if [[ "${SELECTIONS[vscode]:-off}"     == "on" ]]; then install_vscode;     fi
+  if [[ "${SELECTIONS[vscodium]:-off}"   == "on" ]]; then install_vscodium;   fi
+  if [[ "${SELECTIONS[vscodium_profiles]:-off}" == "on" ]]; then configure_vscodium_profiles; fi
   if [[ "${SELECTIONS[nvm_node]:-off}"   == "on" ]]; then install_nvm_node;   fi
   if [[ "${SELECTIONS[rvm_ruby]:-off}"   == "on" ]]; then install_rvm_ruby;   fi
   if [[ "${SELECTIONS[docker]:-off}"     == "on" ]]; then install_docker;     fi
@@ -735,6 +905,8 @@ show_menu "shell" \
 
 show_menu "dev" \
   "vscode:Visual Studio Code" \
+  "vscodium:VSCodium" \
+  "vscodium_profiles:Perfiles de desarrollo de VSCodium (ajustes + extensiones)" \
   "nvm_node:NVM + Node.js LTS" \
   "rvm_ruby:RVM + Ruby (vía PPA rael-gc)" \
   "docker:Docker Engine"
@@ -743,7 +915,7 @@ show_menu "apps" \
   "obsidian:Obsidian (AppImage, con soporte Wayland)" \
   "steam:Steam (gaming)" \
   "copyq:CopyQ — gestor de portapapeles avanzado" \
-  "kdeconnect:KDE Connect — sincronización con Android" \
+  "kdeconnect:KDE Connect — sincronización con Android + \"Enviar a\" en archivos" \
   "noir_theme:Tema COSMIC caelestia-noir (oscuro, esquinas rectas)" \
   "vlc:VLC — reproductor multimedia" \
   "gimp:GIMP — editor de imágenes" \
